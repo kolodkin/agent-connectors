@@ -3,8 +3,6 @@
 Personal chat connectors (remote MCP servers) built with Deno. The first one lets
 ChatGPT or Claude read your data from the Google Health app.
 
-Design: `docs/superpowers/specs/2026-09-29-google-health-mcp-connector-design.md`
-
 ## Tools
 
 | Tool | What it does |
