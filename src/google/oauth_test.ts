@@ -1,26 +1,16 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { fakeIdToken, json, type Route, withCtx } from "../testing.ts";
+import { fakeIdToken, json, ownerLogin as login, type Route, TEST_NOW as NOW, withCtx } from "../testing.ts";
 import {
   buildGoogleAuthUrl,
   exchangeGoogleCode,
   getAccessToken,
   GOOGLE_TOKEN_URL,
   GoogleAuthExpiredError,
-  type GoogleLogin,
   hasGoogleTokens,
   saveGoogleLogin,
 } from "./oauth.ts";
 
 const TOKEN = `POST ${GOOGLE_TOKEN_URL}`;
-const NOW = Date.parse("2026-09-29T12:00:00Z");
-const login = (over: Partial<GoogleLogin> = {}): GoogleLogin => ({
-  email: "owner@example.com",
-  emailVerified: true,
-  refreshToken: "r1",
-  accessToken: "a1",
-  expiresAt: NOW + 3600_000,
-  ...over,
-});
 
 Deno.test("auth url asks for offline access, our scopes, and consent when no token is stored", async () => {
   await withCtx({}, async (ctx) => {

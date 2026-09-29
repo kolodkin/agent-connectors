@@ -1,5 +1,6 @@
 import type { Config } from "./config.ts";
 import type { Ctx } from "./ctx.ts";
+import type { GoogleLogin } from "./google/oauth.ts";
 
 export const TEST_CONFIG: Config = {
   googleClientId: "gcid",
@@ -9,10 +10,24 @@ export const TEST_CONFIG: Config = {
   tz: "America/New_York",
 };
 
+export const TEST_NOW = Date.parse("2026-09-29T12:00:00Z");
+
+/** The allowed owner's Google login, valid for an hour from TEST_NOW. */
+export function ownerLogin(over: Partial<GoogleLogin> = {}): GoogleLogin {
+  return {
+    email: TEST_CONFIG.allowedEmail,
+    emailVerified: true,
+    refreshToken: "r1",
+    accessToken: "a1",
+    expiresAt: TEST_NOW + 3600_000,
+    ...over,
+  };
+}
+
 export type Route = (req: Request) => Response | Promise<Response>;
 
 /** Fake fetch. Routes are keyed "METHOD https://host/path" (query string ignored). */
-export function fakeFetch(routes: Record<string, Route>) {
+function fakeFetch(routes: Record<string, Route>) {
   const calls: Request[] = [];
   const fn = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const req = new Request(input, init);
@@ -26,17 +41,12 @@ export function fakeFetch(routes: Record<string, Route>) {
   return { fetch: fn as typeof fetch, calls };
 }
 
-export function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
+export const json = (body: unknown, status = 200): Response => Response.json(body, { status });
 
 /** Unsigned JWT whose payload is `claims` (base64url, no padding). */
 export function fakeIdToken(claims: Record<string, unknown>): string {
   const enc = (o: unknown) =>
-    btoa(JSON.stringify(o)).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+    new TextEncoder().encode(JSON.stringify(o)).toBase64({ alphabet: "base64url", omitPadding: true });
   return `${enc({ alg: "none" })}.${enc(claims)}.sig`;
 }
 
@@ -47,7 +57,7 @@ export async function withCtx(
 ): Promise<void> {
   const kv = await Deno.openKv(":memory:");
   const fake = fakeFetch(opts.routes ?? {});
-  const now = opts.now ?? Date.parse("2026-09-29T12:00:00Z");
+  const now = opts.now ?? TEST_NOW;
   const ctx: Ctx = {
     config: { ...TEST_CONFIG, ...opts.config },
     kv,

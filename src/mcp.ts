@@ -2,7 +2,7 @@ import type { Ctx } from "./ctx.ts";
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "./sdk.ts";
 import { registerTools as registerGoogleHealthTools } from "./sources/google-health/tools.ts";
 
-export function createMcpServer(ctx: Ctx): McpServer {
+function createMcpServer(ctx: Ctx): McpServer {
   const server = new McpServer({ name: "agent-connectors", version: "0.1.0" });
   registerGoogleHealthTools(server, ctx);
   return server;

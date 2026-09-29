@@ -1,6 +1,6 @@
 import type { Ctx } from "../ctx.ts";
 
-export const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const KEY = ["google", "tokens"];
 
@@ -31,7 +31,7 @@ class GoogleTokenError extends Error {
   }
 }
 
-export function googleRedirectUri(ctx: Ctx): string {
+function googleRedirectUri(ctx: Ctx): string {
   return `${ctx.config.baseUrl}/oauth/google/callback`;
 }
 
@@ -65,7 +65,7 @@ export async function exchangeGoogleCode(ctx: Ctx, code: string): Promise<Google
     emailVerified: claims.email_verified === true,
     refreshToken: typeof t.refresh_token === "string" ? t.refresh_token : undefined,
     accessToken: String(t.access_token),
-    expiresAt: ctx.now() + Number(t.expires_in) * 1000,
+    expiresAt: expiresAt(ctx, t),
   };
 }
 
@@ -103,7 +103,7 @@ export async function getAccessToken(ctx: Ctx): Promise<string> {
     throw e;
   }
   const accessToken = String(t.access_token);
-  const updated: GoogleTokens = { ...tokens, accessToken, expiresAt: ctx.now() + Number(t.expires_in) * 1000 };
+  const updated: GoogleTokens = { ...tokens, accessToken, expiresAt: expiresAt(ctx, t) };
   await ctx.kv.set(KEY, updated);
   return accessToken;
 }
@@ -130,8 +130,9 @@ async function loadTokens(ctx: Ctx): Promise<GoogleTokens | null> {
 function decodeJwtPayload(jwt: string): Record<string, unknown> {
   const part = jwt.split(".")[1];
   if (!part) return {};
-  const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-  const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes));
+  return JSON.parse(new TextDecoder().decode(Uint8Array.fromBase64(part, { alphabet: "base64url" })));
+}
+
+function expiresAt(ctx: Ctx, token: Record<string, unknown>): number {
+  return ctx.now() + Number(token.expires_in) * 1000;
 }

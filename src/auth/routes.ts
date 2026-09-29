@@ -27,8 +27,11 @@ export async function handleAuthRoute(ctx: Ctx, req: Request, scopes: string[]):
 
 export async function requireBearer(ctx: Ctx, req: Request): Promise<Response | null> {
   const token = req.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1];
-  if (token && (await store.verifyAccessToken(ctx.kv, token, ctx.now()))) {
-    if (await hasGoogleTokens(ctx)) return null;
+  const [valid, google] = token
+    ? await Promise.all([store.verifyAccessToken(ctx.kv, token, ctx.now()), hasGoogleTokens(ctx)])
+    : [false, false];
+  if (valid) {
+    if (google) return null;
     // Google access is gone: drop our tokens so the chat client re-runs the login.
     await store.revokeAllTokens(ctx.kv);
   }
@@ -117,9 +120,9 @@ async function decideConsent(ctx: Ctx, req: Request, scopes: string[]): Promise<
   const form = new URLSearchParams(await req.text());
   const state = form.get("state") ?? "";
   const pending = await store.getPending(ctx.kv, state, ctx.now());
-  if (!pending) return new Response("Login session expired or invalid. Start again from your chat app.", { status: 400 });
+  if (!pending) return loginExpired();
   // SameSite=Strict keeps the cookie off cross-site POSTs, so a forged form cannot approve.
-  if (!pending.csrf || readCookie(req, CONSENT_COOKIE) !== pending.csrf) {
+  if (readCookie(req, CONSENT_COOKIE) !== pending.csrf) {
     return new Response("Approval must come from the consent page.", { status: 403 });
   }
   if (form.get("decision") !== "approve") {
@@ -136,8 +139,8 @@ function consentPage(state: string, csrf: string, clientName: string, redirectHo
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Allow access?</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem">
-<h1>Allow access to your health data?</h1>
-<p><strong>${escapeHtml(clientName)}</strong> wants read access to your Google Health data.
+<h1>Allow access?</h1>
+<p><strong>${escapeHtml(clientName)}</strong> wants read access to your data through this connector.
 It will receive access at <strong>${escapeHtml(redirectHost)}</strong>.</p>
 <p>Only approve if you just added this connector yourself.</p>
 <form method="post" action="/authorize">
@@ -156,6 +159,10 @@ It will receive access at <strong>${escapeHtml(redirectHost)}</strong>.</p>
   });
 }
 
+function loginExpired(): Response {
+  return new Response("Login session expired or invalid. Start again from your chat app.", { status: 400 });
+}
+
 function readCookie(req: Request, name: string): string | undefined {
   for (const part of (req.headers.get("cookie") ?? "").split(";")) {
     const [k, ...v] = part.trim().split("=");
@@ -172,9 +179,7 @@ function escapeHtml(s: string): string {
 async function googleCallback(ctx: Ctx, url: URL): Promise<Response> {
   const p = url.searchParams;
   const pending = await store.takePending(ctx.kv, p.get("state") ?? "", ctx.now());
-  if (!pending) {
-    return new Response("Login session expired or invalid. Start again from your chat app.", { status: 400 });
-  }
+  if (!pending) return loginExpired();
   const back = (params: Record<string, string>) =>
     redirectWith(pending.redirectUri, { ...params, state: pending.clientState });
   const code = p.get("code");

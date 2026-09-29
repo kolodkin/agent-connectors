@@ -3,10 +3,11 @@ import { createHandler } from "./app.ts";
 import { issueTokens } from "./auth/store.ts";
 import { saveGoogleLogin } from "./google/oauth.ts";
 import { Client, StreamableHTTPClientTransport } from "./sdk.ts";
-import { json, withCtx } from "./testing.ts";
+import { HEALTH_API } from "./sources/google-health/client.ts";
+import { json, ownerLogin, TEST_CONFIG, withCtx } from "./testing.ts";
 
-const BASE = "https://conn.example.com";
-const API = "https://health.googleapis.com/v4/users/me/dataTypes";
+const BASE = TEST_CONFIG.baseUrl;
+const API = `${HEALTH_API}/v4/users/me/dataTypes`;
 
 Deno.test("unauthenticated /mcp gets 401 pointing at resource metadata", async () => {
   await withCtx({}, async (ctx) => {
@@ -32,13 +33,7 @@ Deno.test("MCP client lists read-only tools and calls get_health_data over Strea
       json({ rollupDataPoints: [{ civilStartTime: { date: { year: 2026, month: 9, day: 1 } }, steps: { countSum: "8000" } }] }),
   };
   await withCtx({ routes }, async (ctx) => {
-    await saveGoogleLogin(ctx, {
-      email: "owner@example.com",
-      emailVerified: true,
-      refreshToken: "r",
-      accessToken: "ga",
-      expiresAt: ctx.now() + 3600_000,
-    });
+    await saveGoogleLogin(ctx, ownerLogin());
     const { access_token } = await issueTokens(ctx.kv, "client-1", ctx.now());
     const handler = createHandler(ctx);
     const client = new Client({ name: "test", version: "1.0.0" });

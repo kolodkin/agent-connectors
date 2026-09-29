@@ -1,5 +1,5 @@
 export const ACCESS_TTL_MS = 60 * 60_000;
-export const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
 const CODE_TTL_MS = 5 * 60_000;
 const PENDING_TTL_MS = 10 * 60_000;
 
@@ -15,7 +15,7 @@ export interface PendingAuth {
   codeChallenge: string;
   clientState?: string;
   /** Must match the consent cookie set on the owner's browser (blocks cross-site approval). */
-  csrf?: string;
+  csrf: string;
 }
 
 export interface TokenResponse {
@@ -41,7 +41,7 @@ export function randomToken(): string {
 }
 
 /** base64url(SHA-256(s)) — used for token hashing and PKCE S256. */
-export async function sha256(s: string): Promise<string> {
+async function sha256(s: string): Promise<string> {
   return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))));
 }
 
@@ -95,12 +95,11 @@ export async function takeCode(kv: Deno.Kv, code: string, now: number): Promise<
 export async function issueTokens(kv: Deno.Kv, clientId: string, now: number): Promise<TokenResponse> {
   const access = randomToken();
   const refresh = randomToken();
-  await kv.set(["oauth", "access", await sha256(access)], { clientId, expiresAt: now + ACCESS_TTL_MS }, {
-    expireIn: ACCESS_TTL_MS,
-  });
-  await kv.set(["oauth", "refresh", await sha256(refresh)], { clientId, expiresAt: now + REFRESH_TTL_MS }, {
-    expireIn: REFRESH_TTL_MS,
-  });
+  const [accessHash, refreshHash] = await Promise.all([sha256(access), sha256(refresh)]);
+  await kv.atomic()
+    .set(["oauth", "access", accessHash], { clientId, expiresAt: now + ACCESS_TTL_MS }, { expireIn: ACCESS_TTL_MS })
+    .set(["oauth", "refresh", refreshHash], { clientId, expiresAt: now + REFRESH_TTL_MS }, { expireIn: REFRESH_TTL_MS })
+    .commit();
   return { access_token: access, refresh_token: refresh, token_type: "Bearer", expires_in: ACCESS_TTL_MS / 1000 };
 }
 
@@ -137,5 +136,5 @@ async function take<T extends Expiring>(kv: Deno.Kv, key: Deno.KvKey, now: numbe
 }
 
 function b64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return bytes.toBase64({ alphabet: "base64url", omitPadding: true });
 }

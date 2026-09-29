@@ -1,20 +1,15 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import type { Ctx } from "../../ctx.ts";
 import { GOOGLE_TOKEN_URL, GoogleAuthExpiredError, saveGoogleLogin } from "../../google/oauth.ts";
-import { json, type Route, withCtx } from "../../testing.ts";
+import { json, ownerLogin, type Route, withCtx } from "../../testing.ts";
+import { HEALTH_API } from "./client.ts";
 import { getDailySummary, getHealthData, listDataTypes } from "./tools.ts";
 
-const API = "https://health.googleapis.com/v4/users/me/dataTypes";
+const API = `${HEALTH_API}/v4/users/me/dataTypes`;
 
 async function withHealth(routes: Record<string, Route>, fn: (ctx: Ctx, calls: Request[]) => Promise<void>) {
   await withCtx({ routes }, async (ctx, calls) => {
-    await saveGoogleLogin(ctx, {
-      email: "owner@example.com",
-      emailVerified: true,
-      refreshToken: "r",
-      accessToken: "ga",
-      expiresAt: ctx.now() + 3600_000,
-    });
+    await saveGoogleLogin(ctx, ownerLogin({ accessToken: "ga" }));
     await fn(ctx, calls);
   });
 }
@@ -134,7 +129,7 @@ Deno.test("daily summary defaults to today in TZ", async () => {
 Deno.test("expired Google access fails the whole summary with the reconnect message", async () => {
   const routes = { [`POST ${GOOGLE_TOKEN_URL}`]: () => json({ error: "invalid_grant" }, 400) };
   await withCtx({ routes }, async (ctx) => {
-    await saveGoogleLogin(ctx, { email: "o", emailVerified: true, refreshToken: "r", accessToken: "a", expiresAt: 0 });
+    await saveGoogleLogin(ctx, ownerLogin({ expiresAt: 0 }));
     await assertRejects(() => getDailySummary(ctx, "2026-09-28"), GoogleAuthExpiredError, "reconnect");
   });
 });

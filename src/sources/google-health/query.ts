@@ -1,9 +1,9 @@
 import type { DataTypeInfo, Mode } from "./catalog.ts";
 
-export const MAX_POINTS = 500;
+const MAX_POINTS = 500;
 
 /** Local (civil) times as YYYY-MM-DDTHH:mm:ss; `end` is exclusive. */
-export interface CivilRange {
+interface CivilRange {
   start: string;
   end: string;
 }
@@ -44,7 +44,7 @@ function checkDate(date: string): void {
   }
 }
 
-export function addDays(date: string, n: number): string {
+function addDays(date: string, n: number): string {
   const d = new Date(`${date}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);

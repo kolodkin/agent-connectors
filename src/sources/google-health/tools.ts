@@ -1,12 +1,13 @@
 import { z } from "zod";
 import type { Ctx } from "../../ctx.ts";
-import { GoogleAuthExpiredError } from "../../google/oauth.ts";
+import { getAccessToken } from "../../google/oauth.ts";
 import type { McpServer } from "../../sdk.ts";
+import { ok, run } from "../../tool_result.ts";
 import { CATALOG, findType, type Mode } from "./catalog.ts";
 import { HealthApiError, healthRequest } from "./client.ts";
 import { buildRequest, chooseMode, parseRange, todayIn, trimResponse } from "./query.ts";
 
-export interface HealthDataInput {
+interface HealthDataInput {
   type: string;
   from: string;
   to: string;
@@ -41,15 +42,14 @@ export async function getHealthData(ctx: Ctx, input: HealthDataInput) {
     }
     throw e;
   }
-  const { points, nextPageToken } = trimResponse(info, mode, body);
+  const trimmed = trimResponse(info, mode, body);
   return {
     type: info.id,
     mode,
     from: input.from,
     to: input.to,
-    points,
-    ...(nextPageToken ? { nextPageToken } : {}),
-    ...(points.length ? {} : { note: `No ${info.id} data in this range` }),
+    ...trimmed,
+    ...(trimmed.points.length ? {} : { note: `No ${info.id} data in this range` }),
   };
 }
 
@@ -66,6 +66,7 @@ const SUMMARY: { type: string; mode: Mode; latestOnly?: boolean }[] = [
 
 export async function getDailySummary(ctx: Ctx, date?: string) {
   const day = date ?? todayIn(ctx.config.tz, ctx.now());
+  await getAccessToken(ctx); // refresh once here, not in each of the parallel calls below
   const results = await Promise.allSettled(
     SUMMARY.map((m) => getHealthData(ctx, { type: m.type, from: day, to: day, mode: m.mode })),
   );
@@ -75,7 +76,6 @@ export async function getDailySummary(ctx: Ctx, date?: string) {
   for (const [i, r] of results.entries()) {
     const { type, latestOnly } = SUMMARY[i];
     if (r.status === "rejected") {
-      if (r.reason instanceof GoogleAuthExpiredError) throw r.reason;
       errors[type] = r.reason instanceof Error ? r.reason.message : String(r.reason);
     } else if (r.value.points.length === 0) {
       missing.push(type);
@@ -84,20 +84,6 @@ export async function getDailySummary(ctx: Ctx, date?: string) {
     }
   }
   return { date: day, summary, missing, ...(Object.keys(errors).length ? { errors } : {}) };
-}
-
-type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
-
-function ok(data: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(data) }] };
-}
-
-async function run(fn: () => Promise<unknown>): Promise<ToolResult> {
-  try {
-    return ok(await fn());
-  } catch (e) {
-    return { content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }], isError: true };
-  }
 }
 
 const DATE_HELP = "YYYY-MM-DD or YYYY-MM-DDTHH:mm, in the owner's local time";

@@ -1,7 +1,8 @@
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import { TEST_NOW } from "../testing.ts";
 import * as store from "./store.ts";
 
-const NOW = Date.parse("2026-09-29T12:00:00Z");
+const NOW = TEST_NOW;
 
 async function withKv(fn: (kv: Deno.Kv) => Promise<void>) {
   const kv = await Deno.openKv(":memory:");
@@ -41,7 +42,7 @@ Deno.test("expired codes and pending logins are rejected", async () => {
   await withKv(async (kv) => {
     const code = await store.issueCode(kv, { clientId: "c", redirectUri: "r", codeChallenge: "x" }, NOW);
     assertEquals(await store.takeCode(kv, code, NOW + 5 * 60_000 + 1), null);
-    await store.savePending(kv, "s", { clientId: "c", redirectUri: "r", codeChallenge: "x" }, NOW);
+    await store.savePending(kv, "s", { clientId: "c", redirectUri: "r", codeChallenge: "x", csrf: "t" }, NOW);
     assertEquals(await store.takePending(kv, "s", NOW + 10 * 60_000 + 1), null);
   });
 });
