@@ -16,6 +16,8 @@ export interface PendingAuth {
   clientState?: string;
   /** Must match the consent cookie set on the owner's browser (blocks cross-site approval). */
   csrf: string;
+  /** Set when the owner clicks Approve; the Google callback requires it. */
+  approved?: boolean;
 }
 
 export interface TokenResponse {
@@ -69,6 +71,10 @@ export async function savePending(kv: Deno.Kv, state: string, pending: PendingAu
 export async function getPending(kv: Deno.Kv, state: string, now: number): Promise<PendingAuth | null> {
   const pending = (await kv.get<PendingAuth & Expiring>(["oauth", "pending", state])).value;
   return pending && pending.expiresAt > now ? pending : null;
+}
+
+export async function approvePending(kv: Deno.Kv, state: string, pending: PendingAuth, now: number): Promise<void> {
+  await savePending(kv, state, { ...pending, approved: true }, now);
 }
 
 export async function takePending(kv: Deno.Kv, state: string, now: number): Promise<PendingAuth | null> {

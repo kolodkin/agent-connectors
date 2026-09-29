@@ -275,3 +275,22 @@ Deno.test("client names are HTML-escaped on the consent page", async () => {
     assertStringIncludes(html, "&lt;script&gt;");
   });
 });
+
+Deno.test("the Google callback is refused unless the owner approved on the consent page", async () => {
+  await withCtx({ routes: googleReturns("owner@example.com") }, async (ctx) => {
+    const clientId = await register(ctx);
+    const { state } = await consentPage(ctx, clientId); // attacker reads state, skips Approve
+    const res = await call(ctx, "GET", `/oauth/google/callback?state=${state}&code=gcode`);
+    assertEquals(res.status, 400);
+    assertEquals(res.headers.get("location"), null);
+    assert(!(await hasGoogleTokens(ctx)));
+  });
+});
+
+Deno.test("consent page CSP does not block the Approve/Deny redirects (no form-action)", async () => {
+  await withCtx({}, async (ctx) => {
+    const clientId = await register(ctx);
+    const page = await call(ctx, "GET", `/authorize?${authorizeQuery(clientId)}`);
+    assertEquals(page.headers.get("content-security-policy")!.includes("form-action"), false);
+  });
+});

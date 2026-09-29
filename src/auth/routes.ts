@@ -129,6 +129,7 @@ async function decideConsent(ctx: Ctx, req: Request, scopes: string[]): Promise<
     await store.takePending(ctx.kv, state, ctx.now());
     return redirectWith(pending.redirectUri, { error: "access_denied", state: pending.clientState });
   }
+  await store.approvePending(ctx.kv, state, pending, ctx.now());
   return Response.redirect(buildGoogleAuthUrl(ctx, state, scopes), 302);
 }
 
@@ -153,7 +154,7 @@ It will receive access at <strong>${escapeHtml(redirectHost)}</strong>.</p>
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "x-frame-options": "DENY",
-      "content-security-policy": "frame-ancestors 'none'; default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+      "content-security-policy": "frame-ancestors 'none'; default-src 'none'; style-src 'unsafe-inline'",
       "set-cookie": `${CONSENT_COOKIE}=${csrf}; Path=/authorize; Max-Age=600; HttpOnly; Secure; SameSite=Strict`,
     },
   });
@@ -179,7 +180,8 @@ function escapeHtml(s: string): string {
 async function googleCallback(ctx: Ctx, url: URL): Promise<Response> {
   const p = url.searchParams;
   const pending = await store.takePending(ctx.kv, p.get("state") ?? "", ctx.now());
-  if (!pending) return loginExpired();
+  // `state` is visible on the consent page, so require the owner's Approve, not just a valid state.
+  if (!pending?.approved) return loginExpired();
   const back = (params: Record<string, string>) =>
     redirectWith(pending.redirectUri, { ...params, state: pending.clientState });
   const code = p.get("code");
