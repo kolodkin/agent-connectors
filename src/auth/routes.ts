@@ -106,8 +106,7 @@ async function authorize(ctx: Ctx, url: URL): Promise<Response> {
   const codeChallenge = p.get("code_challenge");
   if (!codeChallenge || p.get("code_challenge_method") !== "S256") return fail("invalid_request");
 
-  // Any client can register, so the owner must approve each authorization on our own
-  // page; otherwise one click on a crafted link would silently hand a token to that client.
+  // Registration is open, so the owner approves each authorization — else a crafted link hands out a token.
   const state = store.randomToken();
   const csrf = store.randomToken();
   await store.savePending(ctx.kv, state, { clientId: client.clientId, redirectUri, codeChallenge, clientState, csrf }, ctx.now());

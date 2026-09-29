@@ -44,8 +44,7 @@ export function buildGoogleAuthUrl(ctx: Ctx, state: string, scopes: string[]): s
     scope: ["openid", "email", ...scopes].join(" "),
     access_type: "offline",
     login_hint: ctx.config.allowedEmail,
-    // Google only returns a refresh token on consent. Always asking means every login
-    // replaces a stored token that may already be dead (7-day Testing-mode expiry).
+    // Refresh tokens come only with consent; always asking replaces a possibly dead one.
     prompt: "consent",
     state,
   }).toString();
