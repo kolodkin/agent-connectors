@@ -65,3 +65,14 @@ Deno.test("MCP client lists read-only tools and calls get_health_data over Strea
     }
   });
 });
+
+Deno.test("GET and DELETE on /mcp are 405 in stateless mode (no dangling SSE stream)", async () => {
+  await withCtx({}, async (ctx) => {
+    const handler = createHandler(ctx);
+    for (const method of ["GET", "DELETE"]) {
+      const res = await handler(new Request(`${BASE}/mcp`, { method }));
+      assertEquals(res.status, 405, method);
+      assertEquals(res.headers.get("allow"), "POST");
+    }
+  });
+});

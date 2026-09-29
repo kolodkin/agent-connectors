@@ -35,7 +35,7 @@ export function googleRedirectUri(ctx: Ctx): string {
   return `${ctx.config.baseUrl}/oauth/google/callback`;
 }
 
-export async function buildGoogleAuthUrl(ctx: Ctx, state: string, scopes: string[]): Promise<string> {
+export function buildGoogleAuthUrl(ctx: Ctx, state: string, scopes: string[]): string {
   const url = new URL(GOOGLE_AUTH_URL);
   url.search = new URLSearchParams({
     client_id: ctx.config.googleClientId,
@@ -44,10 +44,11 @@ export async function buildGoogleAuthUrl(ctx: Ctx, state: string, scopes: string
     scope: ["openid", "email", ...scopes].join(" "),
     access_type: "offline",
     login_hint: ctx.config.allowedEmail,
+    // Google only returns a refresh token on consent. Always asking means every login
+    // replaces a stored token that may already be dead (7-day Testing-mode expiry).
+    prompt: "consent",
     state,
   }).toString();
-  // Google only returns a refresh token on consent; ask for it when we have none.
-  if (!(await hasGoogleTokens(ctx))) url.searchParams.set("prompt", "consent");
   return url.toString();
 }
 

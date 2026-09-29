@@ -29,7 +29,7 @@ Design: `docs/superpowers/specs/2026-09-29-google-health-mcp-connector-design.md
    | `BASE_URL` | `https://my-health.deno.dev` |
    | `TZ` | your IANA timezone, e.g. `Europe/London` (default `UTC`) |
 
-6. **Add the connector** — ChatGPT: Settings → Apps & Connectors → Advanced → Developer mode, then *Create* with URL `https://my-health.deno.dev/mcp` and OAuth authentication. Claude: Settings → Connectors → *Add custom connector* with the same URL. Sign in with your Google account when prompted.
+6. **Add the connector** — ChatGPT: Settings → Apps & Connectors → Advanced → Developer mode, then *Create* with URL `https://my-health.deno.dev/mcp` and OAuth authentication. Claude: Settings → Connectors → *Add custom connector* with the same URL. You'll see this server's own *Allow access?* page first — approve only connectors you just added — then sign in with your Google account.
 
 **Weekly re-login:** while the Google app is in *Testing*, Google expires its refresh token after 7 days. The server then asks your chat app to reconnect; sign in again.
 

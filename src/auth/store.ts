@@ -14,6 +14,8 @@ export interface PendingAuth {
   redirectUri: string;
   codeChallenge: string;
   clientState?: string;
+  /** Must match the consent cookie set on the owner's browser (blocks cross-site approval). */
+  csrf?: string;
 }
 
 export interface TokenResponse {
@@ -61,6 +63,12 @@ export async function savePending(kv: Deno.Kv, state: string, pending: PendingAu
   await kv.set(["oauth", "pending", state], { ...pending, expiresAt: now + PENDING_TTL_MS }, {
     expireIn: PENDING_TTL_MS,
   });
+}
+
+/** Reads a pending login without consuming it (the Google callback consumes it later). */
+export async function getPending(kv: Deno.Kv, state: string, now: number): Promise<PendingAuth | null> {
+  const pending = (await kv.get<PendingAuth & Expiring>(["oauth", "pending", state])).value;
+  return pending && pending.expiresAt > now ? pending : null;
 }
 
 export async function takePending(kv: Deno.Kv, state: string, now: number): Promise<PendingAuth | null> {

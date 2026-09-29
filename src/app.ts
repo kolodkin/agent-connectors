@@ -7,7 +7,11 @@ export function createHandler(ctx: Ctx): (req: Request) => Promise<Response> {
   return async (req) => {
     try {
       const url = new URL(req.url);
-      if (url.pathname === "/mcp") return (await requireBearer(ctx, req)) ?? (await handleMcp(ctx, req));
+      if (url.pathname === "/mcp") {
+        // Stateless server: no SSE stream (GET) or session to delete (DELETE) — POST only.
+        if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers: { allow: "POST" } });
+        return (await requireBearer(ctx, req)) ?? (await handleMcp(ctx, req));
+      }
       const auth = await handleAuthRoute(ctx, req, SCOPES);
       if (auth) return auth;
       if (req.method === "GET" && url.pathname === "/") {

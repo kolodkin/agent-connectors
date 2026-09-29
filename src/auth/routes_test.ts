@@ -20,8 +20,8 @@ function googleReturns(email: string, verified = true): Record<string, Route> {
   };
 }
 
-async function call(ctx: Ctx, method: string, path: string, body?: BodyInit): Promise<Response> {
-  const res = await handleAuthRoute(ctx, new Request(`https://conn.example.com${path}`, { method, body }), ["scope.a"]);
+async function call(ctx: Ctx, method: string, path: string, body?: BodyInit, headers?: HeadersInit): Promise<Response> {
+  const res = await handleAuthRoute(ctx, new Request(`https://conn.example.com${path}`, { method, body, headers }), ["scope.a"]);
   assert(res, `no auth route for ${method} ${path}`);
   return res;
 }
@@ -43,12 +43,28 @@ function authorizeQuery(clientId: string, redirectUri = REDIRECT): string {
   }).toString();
 }
 
-/** register → authorize → Google callback; returns our authorization code. */
+/** GET /authorize shows our consent page; returns its form state and the CSRF cookie it set. */
+async function consentPage(ctx: Ctx, clientId: string): Promise<{ state: string; cookie: string }> {
+  const page = await call(ctx, "GET", `/authorize?${authorizeQuery(clientId)}`);
+  assertEquals(page.status, 200);
+  const html = await page.text();
+  const state = html.match(/name="state" value="([^"]+)"/)![1];
+  const cookie = page.headers.get("set-cookie")!.split(";")[0];
+  return { state, cookie };
+}
+
+/** consent page → owner approves → redirect to Google; returns the Google authorize URL. */
+async function approve(ctx: Ctx, clientId: string): Promise<URL> {
+  const { state, cookie } = await consentPage(ctx, clientId);
+  const res = await call(ctx, "POST", "/authorize", new URLSearchParams({ state, decision: "approve" }), { cookie });
+  assertEquals(res.status, 302);
+  return new URL(res.headers.get("location")!);
+}
+
+/** register → authorize → consent → Google callback; returns our authorization code. */
 async function login(ctx: Ctx): Promise<{ clientId: string; code: string }> {
   const clientId = await register(ctx);
-  const toGoogle = await call(ctx, "GET", `/authorize?${authorizeQuery(clientId)}`);
-  assertEquals(toGoogle.status, 302);
-  const googleUrl = new URL(toGoogle.headers.get("location")!);
+  const googleUrl = await approve(ctx, clientId);
   assertEquals(googleUrl.searchParams.get("scope"), "openid email scope.a");
   const state = googleUrl.searchParams.get("state")!;
   const back = await call(ctx, "GET", `/oauth/google/callback?state=${state}&code=gcode`);
@@ -130,8 +146,7 @@ Deno.test("a code cannot be replayed or used with the wrong PKCE verifier", asyn
 Deno.test("a different Google account is refused and nothing is stored", async () => {
   await withCtx({ routes: googleReturns("stranger@example.com") }, async (ctx) => {
     const clientId = await register(ctx);
-    const toGoogle = await call(ctx, "GET", `/authorize?${authorizeQuery(clientId)}`);
-    const state = new URL(toGoogle.headers.get("location")!).searchParams.get("state")!;
+    const state = (await approve(ctx, clientId)).searchParams.get("state")!;
     const res = await call(ctx, "GET", `/oauth/google/callback?state=${state}&code=gcode`);
     assertEquals(res.status, 403);
     assert(!(await hasGoogleTokens(ctx)));
@@ -141,8 +156,7 @@ Deno.test("a different Google account is refused and nothing is stored", async (
 Deno.test("an unverified Google email is refused", async () => {
   await withCtx({ routes: googleReturns("owner@example.com", false) }, async (ctx) => {
     const clientId = await register(ctx);
-    const toGoogle = await call(ctx, "GET", `/authorize?${authorizeQuery(clientId)}`);
-    const state = new URL(toGoogle.headers.get("location")!).searchParams.get("state")!;
+    const state = (await approve(ctx, clientId)).searchParams.get("state")!;
     assertEquals((await call(ctx, "GET", `/oauth/google/callback?state=${state}&code=gcode`)).status, 403);
   });
 });
@@ -205,5 +219,59 @@ Deno.test("losing Google access revokes our tokens so the chat client must log i
       client_id: clientId,
     }));
     assertEquals(refreshed.status, 400);
+  });
+});
+
+Deno.test("authorize shows a consent page naming the client and redirect host, and cannot be framed", async () => {
+  await withCtx({}, async (ctx) => {
+    const clientId = await register(ctx);
+    const page = await call(ctx, "GET", `/authorize?${authorizeQuery(clientId)}`);
+    assertEquals(page.status, 200);
+    assertEquals(page.headers.get("location"), null);
+    assertEquals(page.headers.get("x-frame-options"), "DENY");
+    assertStringIncludes(page.headers.get("content-security-policy")!, "frame-ancestors 'none'");
+    const cookie = page.headers.get("set-cookie")!;
+    assertStringIncludes(cookie, "HttpOnly");
+    assertStringIncludes(cookie, "SameSite=Strict");
+    const html = await page.text();
+    assertStringIncludes(html, "ChatGPT");
+    assertStringIncludes(html, "chat.example.com");
+  });
+});
+
+Deno.test("approval without the consent cookie is refused (cross-site POST)", async () => {
+  await withCtx({}, async (ctx) => {
+    const clientId = await register(ctx);
+    const { state } = await consentPage(ctx, clientId);
+    for (const headers of [{}, { cookie: "consent_csrf=forged" }] as Record<string, string>[]) {
+      const res = await call(ctx, "POST", "/authorize", new URLSearchParams({ state, decision: "approve" }), headers);
+      assertEquals(res.status, 403);
+      assertEquals(res.headers.get("location"), null);
+    }
+  });
+});
+
+Deno.test("denying consent redirects back with access_denied and never reaches Google", async () => {
+  await withCtx({}, async (ctx) => {
+    const clientId = await register(ctx);
+    const { state, cookie } = await consentPage(ctx, clientId);
+    const res = await call(ctx, "POST", "/authorize", new URLSearchParams({ state, decision: "deny" }), { cookie });
+    const loc = new URL(res.headers.get("location")!);
+    assertEquals(loc.origin + loc.pathname, REDIRECT);
+    assertEquals(loc.searchParams.get("error"), "access_denied");
+    assertEquals(loc.searchParams.get("state"), "cs");
+    // the pending login is gone: approving afterwards fails
+    const again = await call(ctx, "POST", "/authorize", new URLSearchParams({ state, decision: "approve" }), { cookie });
+    assertEquals(again.status, 400);
+  });
+});
+
+Deno.test("client names are HTML-escaped on the consent page", async () => {
+  await withCtx({}, async (ctx) => {
+    const res = await call(ctx, "POST", "/register", JSON.stringify({ redirect_uris: [REDIRECT], client_name: "<script>x</script>" }));
+    const clientId = (await res.json()).client_id;
+    const html = await (await call(ctx, "GET", `/authorize?${authorizeQuery(clientId)}`)).text();
+    assertEquals(html.includes("<script>x</script>"), false);
+    assertStringIncludes(html, "&lt;script&gt;");
   });
 });

@@ -14,7 +14,9 @@ export async function handleAuthRoute(ctx: Ctx, req: Request, scopes: string[]):
     case "POST /register":
       return await register(ctx, req);
     case "GET /authorize":
-      return await authorize(ctx, url, scopes);
+      return await authorize(ctx, url);
+    case "POST /authorize":
+      return await decideConsent(ctx, req, scopes);
     case "GET /oauth/google/callback":
       return await googleCallback(ctx, url);
     case "POST /token":
@@ -89,7 +91,7 @@ function isAllowedRedirect(uri: unknown): uri is string {
   }
 }
 
-async function authorize(ctx: Ctx, url: URL, scopes: string[]): Promise<Response> {
+async function authorize(ctx: Ctx, url: URL): Promise<Response> {
   const p = url.searchParams;
   const client = await store.getClient(ctx.kv, p.get("client_id") ?? "");
   const redirectUri = p.get("redirect_uri") ?? "";
@@ -104,9 +106,68 @@ async function authorize(ctx: Ctx, url: URL, scopes: string[]): Promise<Response
   const codeChallenge = p.get("code_challenge");
   if (!codeChallenge || p.get("code_challenge_method") !== "S256") return fail("invalid_request");
 
+  // Any client can register, so the owner must approve each authorization on our own
+  // page; otherwise one click on a crafted link would silently hand a token to that client.
   const state = store.randomToken();
-  await store.savePending(ctx.kv, state, { clientId: client.clientId, redirectUri, codeChallenge, clientState }, ctx.now());
-  return Response.redirect(await buildGoogleAuthUrl(ctx, state, scopes), 302);
+  const csrf = store.randomToken();
+  await store.savePending(ctx.kv, state, { clientId: client.clientId, redirectUri, codeChallenge, clientState, csrf }, ctx.now());
+  return consentPage(state, csrf, client.clientName ?? "An unnamed app", new URL(redirectUri).host);
+}
+
+async function decideConsent(ctx: Ctx, req: Request, scopes: string[]): Promise<Response> {
+  const form = new URLSearchParams(await req.text());
+  const state = form.get("state") ?? "";
+  const pending = await store.getPending(ctx.kv, state, ctx.now());
+  if (!pending) return new Response("Login session expired or invalid. Start again from your chat app.", { status: 400 });
+  // SameSite=Strict keeps the cookie off cross-site POSTs, so a forged form cannot approve.
+  if (!pending.csrf || readCookie(req, CONSENT_COOKIE) !== pending.csrf) {
+    return new Response("Approval must come from the consent page.", { status: 403 });
+  }
+  if (form.get("decision") !== "approve") {
+    await store.takePending(ctx.kv, state, ctx.now());
+    return redirectWith(pending.redirectUri, { error: "access_denied", state: pending.clientState });
+  }
+  return Response.redirect(buildGoogleAuthUrl(ctx, state, scopes), 302);
+}
+
+const CONSENT_COOKIE = "consent_csrf";
+
+function consentPage(state: string, csrf: string, clientName: string, redirectHost: string): Response {
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Allow access?</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem">
+<h1>Allow access to your health data?</h1>
+<p><strong>${escapeHtml(clientName)}</strong> wants read access to your Google Health data.
+It will receive access at <strong>${escapeHtml(redirectHost)}</strong>.</p>
+<p>Only approve if you just added this connector yourself.</p>
+<form method="post" action="/authorize">
+<input type="hidden" name="state" value="${escapeHtml(state)}">
+<button name="decision" value="approve">Approve</button>
+<button name="decision" value="deny">Deny</button>
+</form></body></html>`;
+  return new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-frame-options": "DENY",
+      "content-security-policy": "frame-ancestors 'none'; default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+      "set-cookie": `${CONSENT_COOKIE}=${csrf}; Path=/authorize; Max-Age=600; HttpOnly; Secure; SameSite=Strict`,
+    },
+  });
+}
+
+function readCookie(req: Request, name: string): string | undefined {
+  for (const part of (req.headers.get("cookie") ?? "").split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return v.join("=");
+  }
+  return undefined;
+}
+
+function escapeHtml(s: string): string {
+  const entities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return s.replace(/[&<>"']/g, (c) => entities[c]);
 }
 
 async function googleCallback(ctx: Ctx, url: URL): Promise<Response> {

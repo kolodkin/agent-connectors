@@ -68,14 +68,20 @@ Endpoints:
 - `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata.
 - `POST /register` — RFC 7591 dynamic client registration (stores client in KV).
 - `GET /authorize` — validates client, `redirect_uri`, PKCE `code_challenge` (S256
-  only); stores the pending request in KV under a random `state`; redirects to Google.
+  only); stores the pending request in KV under a random `state`; shows **our own consent
+  page** naming the client and its redirect host. Because registration is open, this
+  per-authorization consent stops a crafted link from silently issuing a token to an
+  attacker's client (MCP "confused deputy"). The page sets a `SameSite=Strict`, `HttpOnly`
+  CSRF cookie and forbids framing (`X-Frame-Options: DENY`, `frame-ancestors 'none'`).
+- `POST /authorize` — the owner's Approve/Deny. Requires the CSRF cookie to match the
+  pending request. Approve redirects to Google; Deny redirects back with `access_denied`.
 - `GET /oauth/google/callback` — completes the Google step (below), then issues our
   authorization code and redirects to the chat client's `redirect_uri`.
 - `POST /token` — `authorization_code` (with PKCE verifier) and `refresh_token` grants.
   Issues opaque random tokens stored hashed in KV. Access token TTL 1 hour; refresh
   token TTL 30 days.
 
-`/mcp` without a valid token returns `401` with
+`/mcp` accepts only `POST` (stateless: `GET`/`DELETE` return `405`). Without a valid token it returns `401` with
 `WWW-Authenticate: Bearer resource_metadata="<BASE_URL>/.well-known/oauth-protected-resource"`.
 
 ### Our server → Google
@@ -88,8 +94,9 @@ At `/authorize` we redirect to Google requesting
 - `https://www.googleapis.com/auth/googlehealth.sleep.readonly`
 - `https://www.googleapis.com/auth/googlehealth.nutrition.readonly` (needed for `hydration-log`)
 
-Do not send `include_granted_scopes=true` (known to cause 403s). Send
-`prompt=consent` only when no Google refresh token is stored yet.
+Do not send `include_granted_scopes=true` (known to cause 403s). Always send
+`prompt=consent`, so every login returns a fresh refresh token and replaces one that may
+already have expired at Google.
 
 On callback: exchange the code, verify the ID token's `email` equals `ALLOWED_EMAIL`
 and `email_verified` is true. Otherwise return 403 and store nothing. On success,

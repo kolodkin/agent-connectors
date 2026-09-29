@@ -35,11 +35,11 @@ Deno.test("auth url asks for offline access, our scopes, and consent when no tok
   });
 });
 
-Deno.test("auth url omits prompt=consent once a refresh token is stored", async () => {
+Deno.test("auth url asks for consent even when a refresh token is stored, so every login refreshes it", async () => {
   await withCtx({}, async (ctx) => {
     await saveGoogleLogin(ctx, login());
     const url = new URL(await buildGoogleAuthUrl(ctx, "st", []));
-    assertEquals(url.searchParams.has("prompt"), false);
+    assertEquals(url.searchParams.get("prompt"), "consent");
   });
 });
 
