@@ -86,6 +86,7 @@ At `/authorize` we redirect to Google requesting
 - `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly`
 - `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`
 - `https://www.googleapis.com/auth/googlehealth.sleep.readonly`
+- `https://www.googleapis.com/auth/googlehealth.nutrition.readonly` (needed for `hydration-log`)
 
 Do not send `include_granted_scopes=true` (known to cause 403s). Send
 `prompt=consent` only when no Google refresh token is stored yet.
@@ -131,9 +132,10 @@ Input:
 
 Behaviour:
 
-- Builds the filter by kind: interval `{type}.interval.start_time`, sample
-  `{type}.sample_time.physical_time`, daily `{type}.date`, session
-  `{type}.interval.end_time`.
+- Builds the filter on civil (local) time, with the type id in snake_case: intervals and
+  sessions `{type}.interval.civil_start_time`, sleep `sleep.interval.civil_end_time`,
+  samples `{type}.sample_time.civil_time`, daily types `{type}.date`. Only `total`
+  (`rollUp`, which takes UTC timestamps) converts local time with `TZ`.
 - Returns `{ type, mode, from, to, points: [...], nextPageToken? }`, where points
   are trimmed to the useful fields (time/interval/date + value(s) + unit; source only
   in `raw` mode).
