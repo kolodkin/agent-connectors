@@ -1,0 +1,243 @@
+import type { Ctx } from "../ctx.ts";
+import { buildGoogleAuthUrl, exchangeGoogleCode, hasGoogleTokens, saveGoogleLogin } from "../google/oauth.ts";
+import * as store from "./store.ts";
+
+/** Handles OAuth endpoints; returns null for any other path. `scopes` are the Google scopes to request. */
+export async function handleAuthRoute(ctx: Ctx, req: Request, scopes: string[]): Promise<Response | null> {
+  const url = new URL(req.url);
+  switch (`${req.method} ${url.pathname}`) {
+    case "GET /.well-known/oauth-protected-resource":
+    case "GET /.well-known/oauth-protected-resource/mcp":
+      return Response.json(protectedResourceMetadata(ctx));
+    case "GET /.well-known/oauth-authorization-server":
+      return Response.json(authServerMetadata(ctx));
+    case "POST /register":
+      return await register(ctx, req);
+    case "GET /authorize":
+      return await authorize(ctx, url);
+    case "POST /authorize":
+      return await decideConsent(ctx, req, scopes);
+    case "GET /oauth/google/callback":
+      return await googleCallback(ctx, url);
+    case "POST /token":
+      return await token(ctx, req);
+  }
+  return null;
+}
+
+export async function requireBearer(ctx: Ctx, req: Request): Promise<Response | null> {
+  const token = req.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1];
+  const [valid, google] = token
+    ? await Promise.all([store.verifyAccessToken(ctx.kv, token, ctx.now()), hasGoogleTokens(ctx)])
+    : [false, false];
+  if (valid) {
+    if (google) return null;
+    // Google access is gone: drop our tokens so the chat client re-runs the login.
+    await store.revokeAllTokens(ctx.kv);
+  }
+  return new Response("Unauthorized", {
+    status: 401,
+    headers: {
+      "www-authenticate": `Bearer resource_metadata="${ctx.config.baseUrl}/.well-known/oauth-protected-resource"`,
+    },
+  });
+}
+
+function protectedResourceMetadata(ctx: Ctx) {
+  return {
+    resource: `${ctx.config.baseUrl}/mcp`,
+    authorization_servers: [ctx.config.baseUrl],
+    bearer_methods_supported: ["header"],
+  };
+}
+
+function authServerMetadata(ctx: Ctx) {
+  const base = ctx.config.baseUrl;
+  return {
+    issuer: base,
+    authorization_endpoint: `${base}/authorize`,
+    token_endpoint: `${base}/token`,
+    registration_endpoint: `${base}/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+  };
+}
+
+async function register(ctx: Ctx, req: Request): Promise<Response> {
+  const body = await req.json().catch(() => null);
+  const uris: unknown = body?.redirect_uris;
+  if (!Array.isArray(uris) || uris.length === 0 || !uris.every(isAllowedRedirect)) {
+    return oauthError("invalid_redirect_uri", "redirect_uris must be https URLs (or http://localhost)");
+  }
+  const name = typeof body.client_name === "string" ? body.client_name : undefined;
+  const client = await store.registerClient(ctx.kv, uris, name);
+  return Response.json({
+    client_id: client.clientId,
+    client_name: client.clientName,
+    redirect_uris: client.redirectUris,
+    token_endpoint_auth_method: "none",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+  }, { status: 201 });
+}
+
+function isAllowedRedirect(uri: unknown): uri is string {
+  if (typeof uri !== "string") return false;
+  try {
+    const url = new URL(uri);
+    return url.protocol === "https:" ||
+      (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+async function authorize(ctx: Ctx, url: URL): Promise<Response> {
+  const p = url.searchParams;
+  const client = await store.getClient(ctx.kv, p.get("client_id") ?? "");
+  const redirectUri = p.get("redirect_uri") ?? "";
+  // Until redirect_uri is verified, report errors on our own page — never redirect.
+  if (!client) return new Response("Unknown client_id", { status: 400 });
+  if (!client.redirectUris.includes(redirectUri)) {
+    return new Response("redirect_uri is not registered for this client", { status: 400 });
+  }
+  const clientState = p.get("state") ?? undefined;
+  const fail = (error: string) => redirectWith(redirectUri, { error, state: clientState });
+  if (p.get("response_type") !== "code") return fail("unsupported_response_type");
+  const codeChallenge = p.get("code_challenge");
+  if (!codeChallenge || p.get("code_challenge_method") !== "S256") return fail("invalid_request");
+
+  // Registration is open, so the owner approves each authorization — else a crafted link hands out a token.
+  const state = store.randomToken();
+  const csrf = store.randomToken();
+  await store.savePending(ctx.kv, state, { clientId: client.clientId, redirectUri, codeChallenge, clientState, csrf }, ctx.now());
+  return consentPage(state, csrf, client.clientName ?? "An unnamed app", new URL(redirectUri).host);
+}
+
+async function decideConsent(ctx: Ctx, req: Request, scopes: string[]): Promise<Response> {
+  const form = new URLSearchParams(await req.text());
+  const state = form.get("state") ?? "";
+  const pending = await store.getPending(ctx.kv, state, ctx.now());
+  if (!pending) return loginExpired();
+  // SameSite=Strict keeps the cookie off cross-site POSTs, so a forged form cannot approve.
+  if (readCookie(req, CONSENT_COOKIE) !== pending.csrf) {
+    return new Response("Approval must come from the consent page.", { status: 403 });
+  }
+  if (form.get("decision") !== "approve") {
+    await store.takePending(ctx.kv, state, ctx.now());
+    return redirectWith(pending.redirectUri, { error: "access_denied", state: pending.clientState });
+  }
+  await store.approvePending(ctx.kv, state, pending, ctx.now());
+  return Response.redirect(buildGoogleAuthUrl(ctx, state, scopes), 302);
+}
+
+const CONSENT_COOKIE = "consent_csrf";
+
+function consentPage(state: string, csrf: string, clientName: string, redirectHost: string): Response {
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Allow access?</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem">
+<h1>Allow access?</h1>
+<p><strong>${escapeHtml(clientName)}</strong> wants read access to your data through this connector.
+It will receive access at <strong>${escapeHtml(redirectHost)}</strong>.</p>
+<p>Only approve if you just added this connector yourself.</p>
+<form method="post" action="/authorize">
+<input type="hidden" name="state" value="${escapeHtml(state)}">
+<button name="decision" value="approve">Approve</button>
+<button name="decision" value="deny">Deny</button>
+</form></body></html>`;
+  return new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-frame-options": "DENY",
+      "content-security-policy": "frame-ancestors 'none'; default-src 'none'; style-src 'unsafe-inline'",
+      "set-cookie": `${CONSENT_COOKIE}=${csrf}; Path=/authorize; Max-Age=600; HttpOnly; Secure; SameSite=Strict`,
+    },
+  });
+}
+
+function loginExpired(): Response {
+  return new Response("Login session expired or invalid. Start again from your chat app.", { status: 400 });
+}
+
+function readCookie(req: Request, name: string): string | undefined {
+  for (const part of (req.headers.get("cookie") ?? "").split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return v.join("=");
+  }
+  return undefined;
+}
+
+function escapeHtml(s: string): string {
+  const entities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return s.replace(/[&<>"']/g, (c) => entities[c]);
+}
+
+async function googleCallback(ctx: Ctx, url: URL): Promise<Response> {
+  const p = url.searchParams;
+  const pending = await store.takePending(ctx.kv, p.get("state") ?? "", ctx.now());
+  // `state` is visible on the consent page, so require the owner's Approve, not just a valid state.
+  if (!pending?.approved) return loginExpired();
+  const back = (params: Record<string, string>) =>
+    redirectWith(pending.redirectUri, { ...params, state: pending.clientState });
+  const code = p.get("code");
+  if (!code) return back({ error: "access_denied" });
+
+  const login = await exchangeGoogleCode(ctx, code);
+  if (!login.emailVerified || login.email !== ctx.config.allowedEmail) {
+    return new Response("This connector is private to its owner.", { status: 403 });
+  }
+  await saveGoogleLogin(ctx, login);
+  const ourCode = await store.issueCode(ctx.kv, {
+    clientId: pending.clientId,
+    redirectUri: pending.redirectUri,
+    codeChallenge: pending.codeChallenge,
+  }, ctx.now());
+  return back({ code: ourCode });
+}
+
+async function token(ctx: Ctx, req: Request): Promise<Response> {
+  const form = new URLSearchParams(await req.text());
+  const clientId = form.get("client_id") ?? "";
+  switch (form.get("grant_type")) {
+    case "authorization_code": {
+      const grant = await store.takeCode(ctx.kv, form.get("code") ?? "", ctx.now());
+      const valid = grant !== null &&
+        grant.clientId === clientId &&
+        grant.redirectUri === form.get("redirect_uri") &&
+        (await store.pkceMatches(form.get("code_verifier") ?? "", grant.codeChallenge));
+      if (!valid) return oauthError("invalid_grant", "Invalid, expired, or already used code");
+      return tokenJson(await store.issueTokens(ctx.kv, clientId, ctx.now()));
+    }
+    case "refresh_token": {
+      const tokens = (await hasGoogleTokens(ctx))
+        ? await store.rotateRefreshToken(ctx.kv, form.get("refresh_token") ?? "", clientId, ctx.now())
+        : null;
+      if (!tokens) return oauthError("invalid_grant", "Invalid or expired refresh token");
+      return tokenJson(tokens);
+    }
+    default:
+      return oauthError("unsupported_grant_type", "Use authorization_code or refresh_token");
+  }
+}
+
+function tokenJson(tokens: store.TokenResponse): Response {
+  return Response.json(tokens, { headers: { "cache-control": "no-store" } });
+}
+
+function oauthError(error: string, description: string): Response {
+  return Response.json({ error, error_description: description }, {
+    status: 400,
+    headers: { "cache-control": "no-store" },
+  });
+}
+
+function redirectWith(uri: string, params: Record<string, string | undefined>): Response {
+  const url = new URL(uri);
+  for (const [k, v] of Object.entries(params)) if (v !== undefined) url.searchParams.set(k, v);
+  return Response.redirect(url.toString(), 302);
+}

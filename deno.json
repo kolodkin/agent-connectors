@@ -1,0 +1,15 @@
+{
+  "unstable": ["kv"],
+  "nodeModulesDir": "auto",
+  "tasks": {
+    "dev": "deno run -A --watch src/main.ts",
+    "start": "deno run -A src/main.ts",
+    "test": "deno test -A",
+    "check": "deno check src/"
+  },
+  "imports": {
+    "@modelcontextprotocol/sdk/": "npm:/@modelcontextprotocol/sdk@1.31.0/",
+    "zod": "npm:zod@^4",
+    "@std/assert": "jsr:@std/assert@^1"
+  }
+}
