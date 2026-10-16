@@ -13,25 +13,22 @@ ChatGPT or Claude read your data from the Google Health app.
 
 ## One-time setup
 
-Step-by-step walkthrough with links and the errors you will hit: [setup/google.md](setup/google.md).
+Follow [setup/google.md](setup/google.md): Deno Deploy app + KV, Google Cloud project
+(Health API, consent screen, test user, scopes, OAuth client), then these env vars in Deno Deploy:
 
-1. **Google Cloud project** — at console.cloud.google.com create a project and enable the **Google Health API**.
-2. **OAuth consent screen** — User type *External*, publishing status *Testing*, add your Google account as a **test user**. Add scopes: `openid`, `email`, and `googlehealth.activity_and_fitness.readonly`, `googlehealth.health_metrics_and_measurements.readonly`, `googlehealth.sleep.readonly`, `googlehealth.nutrition.readonly`.
-3. **Deploy to Deno Deploy** — create a project from this repo with entrypoint `src/main.ts`. Note its URL, e.g. `https://my-health.deno.dev`.
-4. **OAuth client** — Credentials → Create OAuth client ID → *Web application*, authorized redirect URI `https://my-health.deno.dev/oauth/google/callback`.
-5. **Environment variables** in Deno Deploy:
+| Name | Value |
+|---|---|
+| `GOOGLE_CLIENT_ID` | from the Google OAuth client |
+| `GOOGLE_CLIENT_SECRET` | from the Google OAuth client |
+| `ALLOWED_EMAIL` | your Google account email |
+| `BASE_URL` | your app URL, e.g. `https://my-health.kolodkin.deno.net` |
+| `TZ` | your IANA timezone, e.g. `Asia/Jerusalem` (default `UTC`) |
 
-   | Name | Value |
-   |---|---|
-   | `GOOGLE_CLIENT_ID` | from step 4 |
-   | `GOOGLE_CLIENT_SECRET` | from step 4 |
-   | `ALLOWED_EMAIL` | your Google account email |
-   | `BASE_URL` | `https://my-health.deno.dev` |
-   | `TZ` | your IANA timezone, e.g. `Europe/London` (default `UTC`) |
+Connector URL for Claude or ChatGPT: `<BASE_URL>/mcp`. You'll see this server's own *Allow access?* page
+first — approve only connectors you just added — then sign in with your Google account.
 
-6. **Add the connector** — ChatGPT: Settings → Apps & Connectors → Advanced → Developer mode, then *Create* with URL `https://my-health.deno.dev/mcp` and OAuth authentication. Claude: Settings → Connectors → *Add custom connector* with the same URL. You'll see this server's own *Allow access?* page first — approve only connectors you just added — then sign in with your Google account.
-
-**Weekly re-login:** while the Google app is in *Testing*, Google expires its refresh token after 7 days. The server then asks your chat app to reconnect; sign in again.
+**Weekly re-login:** while the Google app is in *Testing*, Google expires its refresh token after 7 days.
+The server then asks your chat app to reconnect; sign in again.
 
 ## How it connects
 
