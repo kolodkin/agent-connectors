@@ -13,6 +13,8 @@ ChatGPT or Claude read your data from the Google Health app.
 
 ## One-time setup
 
+Step-by-step walkthrough with links and the errors you will hit: [setup/google.md](setup/google.md).
+
 1. **Google Cloud project** — at console.cloud.google.com create a project and enable the **Google Health API**.
 2. **OAuth consent screen** — User type *External*, publishing status *Testing*, add your Google account as a **test user**. Add scopes: `openid`, `email`, and `googlehealth.activity_and_fitness.readonly`, `googlehealth.health_metrics_and_measurements.readonly`, `googlehealth.sleep.readonly`, `googlehealth.nutrition.readonly`.
 3. **Deploy to Deno Deploy** — create a project from this repo with entrypoint `src/main.ts`. Note its URL, e.g. `https://my-health.deno.dev`.
